@@ -1,9 +1,7 @@
 /*==============================================================================
                     YUMNA HUSSAIN - STATA CODING SAMPLE
 ===============================================================================
-
-This sample demonstrates proficiency in STATA for economic and financial data 
-analysis through three main sections:
+Below are the areas addressed in this coding sample
 
 1. FINANCIAL DATA ANALYSIS
    - Constructing financial metrics and performance indicators
@@ -31,11 +29,9 @@ version 18
 clear all
 set more off
 
-// Configure environment
 cd "C:\Users\Yumna Hussain\OneDrive\Desktop\PREDOC Documents\Coding Sample"
 log using "financial_analysis.log", replace
 
-// Import financial data
 import delimited "Sampledata.csv", varnames(1) clear
 
 /*------------------------------------------------------------------------------
