@@ -1,202 +1,191 @@
 /*==============================================================================
                     YUMNA HUSSAIN - STATA CODING SAMPLE
 ===============================================================================
-Below are the areas addressed in this coding sample
+
+This coding sample demonstrates advanced econometric and financial data analysis 
+through two complementary projects:
 
 1. FINANCIAL DATA ANALYSIS
-   - Constructing financial metrics and performance indicators
-   - Data manipulation and statistical analysis
-   - Cross-country comparative analysis
+   - Constructing firm-level performance metrics (ROIC, productivity, leverage)
+   - Data cleaning, winsorization, and summary statistics
+   - Aggregation to country-year level and benchmarking with quantiles
 
 2. TIME SERIES ANALYSIS
-   - Decomposition of retail trade data
-   - Trend, seasonal, and irregular component isolation
+   - Decomposition of monthly U.S. retail trade series from FRED
+   - Extraction of trend, seasonal, and irregular components
    - Visualization of time series components
 
 3. ECONOMETRIC MODELING
-   - ARMA model specification and selection
-   - Diagnostic testing for model adequacy
-   - Residual analysis and interpretation
+   - ARMA model identification using ACF and PACF
+   - Model estimation and selection using information criteria
+   - Diagnostic testing of residuals and stationarity checks
 
-===============================================================================*/
+==============================================================================*/
 
 
 /*==============================================================================
-                        SECTION 1: FINANCIAL DATA ANALYSIS
-===============================================================================*/
+                    SECTION 1: FINANCIAL DATA ANALYSIS
+==============================================================================*/
+
+/*------------------------------------------------------------------------------
+    PART 1: Load and Prepare Firm-Level Data from GitHub
+------------------------------------------------------------------------------*/
 
 version 18
 clear all
 set more off
 
-cd "C:\Users\Yumna Hussain\OneDrive\Desktop\PREDOC Documents\Coding Sample"
-log using "financial_analysis.log", replace
-
+* Load firm-level data directly from GitHub
+copy "https://raw.githubusercontent.com/yumnahussain444/stata_coding_sample_data/refs/heads/main/Sampledata.csv" ///
+     "Sampledata.csv", replace
 import delimited "Sampledata.csv", varnames(1) clear
 
 /*------------------------------------------------------------------------------
-    PART 1: Financial Metric Construction
+    PART 2: Construct Financial Performance Metrics
 ------------------------------------------------------------------------------*/
 
-// Construct Return on Invested Capital (ROIC)
-// ROIC measures how efficiently a company uses its capital to generate profits
+// Core profitability metrics
 gen invested_capital = wsppe + wscurrentassets - wscurrentliabilities - wscash
-sort country year
-by country: gen invested_capital_lagged = invested_capital[_n-1]
+sort iso year
+by iso: gen invested_capital_lagged = invested_capital[_n-1]
 gen roic = wsearningsbeforeinttaxesanddepr / invested_capital_lagged
 
-// Calculate annual sales growth as percentage
-// This metric captures year-over-year business expansion
-sort country year
-by country: gen sales_growth = ((wscommonstock - wscommonstock[_n-1]) / wscommonstock[_n-1]) * 100
-
-// Determine firm age from incorporation date
-// Age is often correlated with firm stability and performance patterns
-gen date_incorp = date(wsdateofincorp, "DMY")
+// Growth and age
+by iso (year): gen sales_growth = ((wssalesusd - wssalesusd[_n-1]) / wssalesusd[_n-1]) * 100
+gen date_incorp = date(wsdateofincorporation, "DMY")
 gen incorporation_year = year(date_incorp)
 gen firm_age = year - incorporation_year
 
-// Calculate labor productivity
-// Measures efficiency of human capital utilization
-gen labor_productivity = wscommonstock / employees
+// Productivity and financial ratios
+gen labor_productivity = wssalesusd / employees
+gen leverage_ratio = wstotalltdebt / invested_capital
+gen current_ratio = wscurrentassets / wscurrentliabilities
+gen quick_ratio = (wscurrentassets - wscash) / wscurrentliabilities
+
+// Normalize performance metrics
+gen roic_per_worker = roic / employees
+gen sales_asset_ratio = wssalesusd / invested_capital
 
 /*------------------------------------------------------------------------------
-    PART 2: Outlier Treatment and Statistical Analysis
+    PART 3: Summary Statistics and Benchmarking
 ------------------------------------------------------------------------------*/
 
-// Generate summary statistics for key variables
-sum roic sales_growth firm_age labor_productivity invested_capital, detail
-
-// Winsorize variables to mitigate outlier effects (1% and 99%)
-// This preserves data structure while reducing extreme value influence
+// Winsorize to control for outliers
 ssc install winsor2, replace
 winsor2 roic labor_productivity, cuts(1 99) replace
 
-// Calculate median financial metrics by country-year
-// Creates panel dataset for comparative analysis
-preserve
-collapse (median) median_roic = roic (median) median_productivity = labor_productivity, by(country year)
-tempfile median_metrics
-save `median_metrics'
-restore
+// Summary statistics
+sum roic sales_growth firm_age labor_productivity leverage_ratio current_ratio
+
+// Demeaning (fixed effects-style)
+egen mean_lp_by_country = mean(labor_productivity), by(country)
+gen lp_demeaned = labor_productivity - mean_lp_by_country
+
+// ROIC quantile-based comparison
+xtile roic_qtile = roic, n(5)
+tabstat labor_productivity, by(roic_qtile) stat(mean sd)
 
 /*------------------------------------------------------------------------------
-    PART 3: Cross-Country Data Integration
+    PART 4: Collapse to Country-Year Level
 ------------------------------------------------------------------------------*/
 
-// Merge with World Economic Outlook data for macroeconomic context
-// First prepare the WEO dataset
+// Save mapping of country to ISO code
 preserve
-import delimited "WEO_Data.csv", clear
-destring v7-v9, replace force
-bysort country: gen id = _n
-reshape long v, i(country id) j(year)
-duplicates drop country year, force
-rename v gdp_growth
-keep country year gdp_growth
-tempfile weo_data
-save `weo_data'
+keep country iso
+duplicates drop
+tempfile country_iso_map
+save `country_iso_map'
 restore
 
-// Merge company-level data with macroeconomic indicators
-merge m:1 country year using `weo_data'
-drop if _merge == 2  // Drop unmatched WEO observations
+// Collapse and aggregate firm-level data
+collapse (median) roic (mean) labor_productivity sales_growth leverage_ratio ///
+         current_ratio firm_age (count) n_firms = firm_age, by(country year)
+
+// Merge ISO code back in
+merge m:1 country using `country_iso_map'
+drop if _merge == 2
 drop _merge
 
-// Create visualizations for selected economies
-// Exploring relationship between firm performance and economic growth
-preserve
-collapse (median) roic gdp_growth, by(country year)
+// Save the country-year panel
+save "Final_Country_Year_Financials.dta", replace
 
-local countries "China Germany Japan Russian Federation South Africa"
-foreach c of local countries {
-    twoway (line roic year if country == "`c'", yaxis(1)) ///
-           (line gdp_growth year if country == "`c'", yaxis(2)), ///
-           title("ROIC and GDP Growth: `c'") ///
-           ylabel(, axis(1)) ylabel(, axis(2)) ///
-           ytitle("Median ROIC", axis(1)) ///
-           ytitle("GDP Growth", axis(2)) ///
-           legend(order(1 "Median ROIC" 2 "GDP Growth"))
-    graph export "`c'_performance.png", replace
-}
-restore
+// Export summary stats to RTF
+estpost summarize roic sales_growth labor_productivity leverage_ratio current_ratio, detail
+esttab using "summary_stats.rtf", ///
+    cells("mean sd min max") ///
+    title("Summary Statistics – Country-Year Financials") ///
+    label replace
 
-log close
+
+
 /*==============================================================================
                     SECTION 2: TIME SERIES ANALYSIS
 ==============================================================================*/
 
+/*------------------------------------------------------------------------------
+    PART 1: Import and Prepare Monthly Retail Trade Data from FRED
+------------------------------------------------------------------------------*/
+
 version 18
 clear all
 set more off
 
-// Configure environment
 cd "C:\Users\Yumna Hussain\OneDrive\Desktop\ECON 366\Homework 1\Project 1"
 log using "time_series_analysis.log", replace
 
-/*------------------------------------------------------------------------------
-    PART 1: Data Preparation and Exploration
-------------------------------------------------------------------------------*/
-
-// Import monthly retail trade data from FRED
+// Load retail trade data
 import fred MRTSSM44000USN, clear
 
-// Transform date variables for time series analysis
-gen dateq = mofd(daten)             
-format %tm dateq                    
-tsset dateq            
+// Time series setup
+gen dateq = mofd(daten)
+format %tm dateq
+tsset dateq
 
-// Apply log transformation to stabilize variance
-gen ln_retail = ln(MRTSSM44000USN) 
+// Log-transform
+gen ln_retail = ln(MRTSSM44000USN)
 
-// Create time trend variables for decomposition
+// Time trend variables
 gen time = _n
 gen t = time
-gen quad = t^2  
+gen quad = t^2
 
-// Generate month indicators for seasonal analysis
-gen date = dofm(dateq)              
-format date %d                       
-gen month_num = month(date)         
+// Generate monthly indicators
+gen date = dofm(dateq)
+format date %d
+gen month_num = month(date)
 
-// Visualize original series
-tsline ln_retail, title("Original Retail Trade Series (Log)")  
-graph export "original_series.png", replace   
+// Plot original log series
+tsline ln_retail, title("Original Retail Trade Series (Log)")
+graph export "original_series.png", replace
 
 /*------------------------------------------------------------------------------
-    PART 2: Time Series Decomposition
+    PART 2: Classical Time Series Decomposition
 ------------------------------------------------------------------------------*/
 
-// Estimate full model with trend and seasonal components
-reg ln_retail t quad i.month_num   
-predict yhat_full      
+// Fit full model with trend and seasonality
+reg ln_retail t quad i.month_num
+predict yhat_full
 
-// Estimate trend-only models for comparison
-// Linear trend specification
+// Trend-only regressions
 reg ln_retail t
 predict yhat_linear
 
-// Quadratic trend specification
-reg ln_retail t quad               
-predict yhat_trend                  
+reg ln_retail t quad
+predict yhat_trend
 
-// Extract individual components
-// Seasonal component = difference between full fit and trend-only fit
-gen seasonal = yhat_full - yhat_trend 
+// Extract seasonal and irregular components
+gen seasonal = yhat_full - yhat_trend
+gen irregular = ln_retail - yhat_full
 
-// Irregular component = residuals from full model
-gen irregular = ln_retail - yhat_full 
-
-// Visualize decomposed components
-tsline yhat_trend, title("Trend Component")  
+// Visualize components
+tsline yhat_trend, title("Trend Component")
 graph export "trend_component.png", replace
 
-tsline seasonal, title("Seasonal Component")   
+tsline seasonal, title("Seasonal Component")
 graph export "seasonal_component.png", replace
 
-tsline irregular, title("Irregular Component") 
+tsline irregular, title("Irregular Component")
 graph export "irregular_component.png", replace
-
 
 /*==============================================================================
                     SECTION 3: ECONOMETRIC MODELING
@@ -206,28 +195,26 @@ graph export "irregular_component.png", replace
     PART 1: ARMA Model Identification
 ------------------------------------------------------------------------------*/
 
-// Examine autocorrelation structure of original series
+// ACF/PACF diagnostics
 ac ln_retail, lags(8) title("ACF of Log Retail Sales")
 pac ln_retail, lags(8) title("PACF of Log Retail Sales")
 corrgram ln_retail
 
-// Analyze irregular component for ARMA modeling
 ac irregular, lags(8) title("ACF of Irregular Component")
 pac irregular, lags(8) title("PACF of Irregular Component")
 
-// First-differencing for stationarity
+// First-difference for stationarity
 gen d_irregular = D.irregular
 tsline d_irregular, title("First-Differenced Irregular Component")
 
-// Examine autocorrelation structure of differenced series
+// ACF/PACF after differencing
 ac d_irregular, lags(8) title("ACF of Differenced Irregular Component")
 pac d_irregular, lags(8) title("PACF of Differenced Irregular Component")
 
 /*------------------------------------------------------------------------------
-    PART 2: Model Estimation and Selection
+    PART 2: Estimate Candidate ARMA Models
 ------------------------------------------------------------------------------*/
 
-// Estimate candidate ARMA models
 arima d_irregular, ar(1) ma(1)
 estimates store arma1_1
 
@@ -240,29 +227,26 @@ estimates store arma2_1
 arima d_irregular, ar(2) ma(2)
 estimates store arma2_2
 
-// Compare models using information criteria
+// Model comparison
 estimates stats arma*
 
 /*------------------------------------------------------------------------------
-    PART 3: Diagnostic Testing
+    PART 3: Residual Diagnostics for Best Model
 ------------------------------------------------------------------------------*/
 
-// Restore best model based on information criteria
-estimates restore arma1_1  // Adjust based on actual results
-
-// Extract and analyze residuals
+estimates restore arma1_1   // Adjust if another model is preferred
 predict residuals, residuals
 
-// Check residual autocorrelation
+// ACF/PACF of residuals
 ac residuals, lags(8) title("ACF of Model Residuals")
 pac residuals, lags(8) title("PACF of Model Residuals")
 
-// Formal tests for white noise residuals
+// White noise tests
 wntestq residuals, lags(8)
 wntestb residuals, table
 
-// Plot residuals for visual inspection
+// Plot residuals
 tsline residuals, title("ARMA Model Residuals")
 graph export "residual_analysis.png", replace
 
-log close
+
